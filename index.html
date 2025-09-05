@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Matrix Binary Visualizer + Lyrics</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#000;color:#fff;font-family:monospace;}
+#controls{
+  position:absolute; top:5px; left:5px; width:300px; background:rgba(0,0,0,0.85); padding:8px; border-radius:6px;
+  display:flex; flex-direction:column; gap:6px; font-size:13px; z-index:1000; transition: transform 0.3s;
+}
+#controls.minimized{transform: translateX(-280px);}
+#controls label{display:flex;justify-content:space-between;align-items:center;}
+#controls input, #controls select, #controls button, #controls textarea{width:100%;margin-top:2px;background:#111;color:#fff;border:1px solid #333;padding:4px;border-radius:4px;font-family:monospace;}
+canvas{display:block;margin:0 auto;background:#000;}
+#keybinds{color:#ccc;font-size:12px;text-align:center;margin-top:4px;}
+</style>
+</head>
+<body>
+<div id="controls">
+  <button id="toggleUIBtn">Minimize</button>
+
+  <strong>Audio Controls</strong>
+  <button id="audioBtn">🎵 Load MP3</button>
+  <input type="file" id="audioFile" accept="audio/*" style="display:none">
+  <button id="startAudioBtn">▶ Start</button>
+  <button id="stopAudioBtn">✖ Stop</button>
+  <button id="unloadAudioBtn">🧹 Unload Audio</button>
+
+  <strong>Binary Background</strong>
+  <label>Digit Size: <input type="range" id="digitSize" min="4" max="36" value="10"></label>
+  <button id="invertNowBtn">↕ Invert Now</button>
+  <label>Hotkey Invert: <input type="text" id="hotkeyInput" maxlength="1" style="width:36px"></label>
+
+  <strong>Visualizer</strong>
+  <label>Bar Width: <input type="range" id="visDensity" min="2" max="20" value="6"></label>
+
+  <strong>Lyrics</strong>
+  <textarea id="lyricsBox" placeholder="Paste lyrics line by line"></textarea>
+  <label>Duration per line (sec): <input type="number" id="lyricDuration" min="0.1" step="0.1" value="2"></label>
+  <button id="loadLyricsBtn">Load Lyrics</button>
+  <button id="startLyricsBtn">▶ Start Lyrics</button>
+  <button id="stopLyricsBtn">✖ Stop Lyrics</button>
+  <button id="unloadLyricsBtn">🧹 Unload Lyrics</button>
+  <label>Font: <select id="lyricFontSelect">
+      <option>monospace</option><option>Courier New</option><option>Arial</option><option>Times New Roman</option><option>Sans-serif</option>
+  </select></label>
+  <button id="toggleBinaryLyrics">Toggle Binary Lyrics</button>
+  <button id="toggleGlitch">Toggle Glitch</button>
+</div>
+
+<canvas id="canvas" width="960" height="540"></canvas>
+<div id="keybinds">
+Invert Grid: Custom Hotkey | Toggle Glitch: G | Toggle Binary Lyrics: B | Start/Stop Lyrics: L | Start Audio: A | Stop Audio: S
+</div>
+
+<script>
+const canvas=document.getElementById('canvas');
+const ctx=canvas.getContext('2d');
+
+const audioBtn=document.getElementById('audioBtn');
+const audioFileInput=document.getElementById('audioFile');
+const startAudioBtn=document.getElementById('startAudioBtn');
+const stopAudioBtn=document.getElementById('stopAudioBtn');
+const unloadAudioBtn=document.getElementById('unloadAudioBtn');
+
+const digitSizeInput=document.getElementById('digitSize');
+const visDensityInput=document.getElementById('visDensity');
+const invertNowBtn=document.getElementById('invertNowBtn');
+const hotkeyInput=document.getElementById('hotkeyInput');
+
+const lyricsBox=document.getElementById('lyricsBox');
+const loadLyricsBtn=document.getElementById('loadLyricsBtn');
+const startLyricsBtn=document.getElementById('startLyricsBtn');
+const stopLyricsBtn=document.getElementById('stopLyricsBtn');
+const unloadLyricsBtn=document.getElementById('unloadLyricsBtn');
+const lyricDurationInput=document.getElementById('lyricDuration');
+const lyricFontSelect=document.getElementById('lyricFontSelect');
+const toggleBinaryLyricsBtn=document.getElementById('toggleBinaryLyrics');
+const toggleGlitchBtn=document.getElementById('toggleGlitch');
+const toggleUIBtn=document.getElementById('toggleUIBtn');
+
+let digitSize=Number(digitSizeInput.value);
+let cols=Math.floor(canvas.width/digitSize);
+let rows=Math.floor(canvas.height/digitSize);
+let grid=createGrid(rows,cols);
+
+const tileCanvas=document.createElement('canvas');
+const tileCtx=tileCanvas.getContext('2d');
+tileCanvas.width=digitSize;
+tileCanvas.height=digitSize;
+
+let audioCtx=null, analyser=null, audioSource=null, audioBuffer=null, dataArray=null, visActive=false;
+
+let lyrics=[], lyricsActive=false, currentLine=0, lyricInterval=null, binaryLyrics=false, glitch=false;
+let hotkey='', invertedVisual=false;
+
+function createGrid(r,c){
+  const g=new Array(r);
+  for(let i=0;i<r;i++){
+    g[i]=new Uint8Array(c);
+    for(let j=0;j<c;j++) g[i][j]=Math.random()>0.5?1:0;
+  }
+  return g;
+}
+
+function resizeGrid(){
+  digitSize=Number(digitSizeInput.value);
+  cols=Math.max(4,Math.floor(canvas.width/digitSize));
+  rows=Math.max(4,Math.floor(canvas.height/digitSize));
+  grid=createGrid(rows,cols);
+  tileCanvas.width=digitSize;
+  tileCanvas.height=digitSize;
+  tileCtx.clearRect(0,0,digitSize,digitSize);
+  tileCtx.fillStyle=invertedVisual?'black':'white';
+  tileCtx.font=`${Math.max(4,digitSize-1)}px monospace`;
+  tileCtx.textAlign='center';
+  tileCtx.textBaseline='middle';
+  tileCtx.fillText('0',digitSize/2,digitSize/2);
+}
+
+function stepGridNoise(){
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      if(Math.random()<0.04) grid[r][c]=Math.random()>0.5?1:0;
+    }
+  }
+}
+
+function drawBackground(){
+  ctx.fillStyle = invertedVisual?'white':'black';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle = invertedVisual?'black':'white';
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      if(grid[r][c]) ctx.drawImage(tileCanvas, c*digitSize, r*digitSize);
+    }
+  }
+}
+
+function drawVisualizer(){
+  if(!visActive || !analyser) return;
+  analyser.getByteFrequencyData(dataArray);
+  const bins=dataArray.length;
+  const half=Math.floor(bins/2);
+  const density=Number(visDensityInput.value);
+  const barWidth=Math.max(2,Math.round(density));
+  const centerX=canvas.width/2;
+  const maxH=canvas.height*0.8;
+  ctx.fillStyle=invertedVisual?'cyan':'red';
+  ctx.font=`${Math.max(8,digitSize)}px monospace`;
+  ctx.textAlign='center';
+  ctx.textBaseline='middle';
+  const step=Math.floor(digitSize*1.2);
+  for(let i=0;i<half;i++){
+    const v=dataArray[i]/255;
+    const barH=Math.max(1,v*maxH);
+    const leftX=centerX-(i*barWidth)-barWidth/2;
+    const rightX=centerX+(i*barWidth)+barWidth/2;
+    for(let y=0;y<barH;y+=step){
+      const drawY=invertedVisual?y+step/2:canvas.height-y-step/2;
+      ctx.fillText('0', leftX, drawY);
+      ctx.fillText('0', rightX, drawY);
+    }
+  }
+}
+
+function drawLyrics(){
+  if(!lyricsActive||lyrics.length===0) return;
+  let line = lyrics[currentLine];
+  if(binaryLyrics) line = convertToBinary(line);
+  if(glitch){
+    line=line.split('').map(c=>Math.random()<0.1? String.fromCharCode(33+Math.floor(Math.random()*94)) : c).join('');
+  }
+  ctx.fillStyle=invertedVisual?'magenta':'cyan';
+  ctx.font=`24px ${lyricFontSelect.value}`;
+  ctx.textAlign='center';
+  ctx.textBaseline='top';
+  ctx.fillText(line, canvas.width/2, 10);
+}
+
+function convertToBinary(str){
+  return str.split('').map(c=>c.charCodeAt(0).toString(2).padStart(8,'0')).join(' ');
+}
+
+function render(){
+  stepGridNoise();
+  drawBackground();
+  drawVisualizer();
+  drawLyrics();
+  requestAnimationFrame(render);
+}
+
+/* ---------- Audio ---------- */
+audioBtn.addEventListener('click',()=>audioFileInput.click());
+audioFileInput.addEventListener('change',async e=>{
+  const f=e.target.files[0]; if(!f) return;
+  if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+  const arr=await f.arrayBuffer();
+  audioCtx.decodeAudioData(arr,buf=>{audioBuffer=buf;});
+});
+
+startAudioBtn.addEventListener('click',()=>{
+  if(!audioBuffer||!audioCtx) return; if(visActive) return;
+  audioSource=audioCtx.createBufferSource();
+  audioSource.buffer=audioBuffer;
+  analyser=audioCtx.createAnalyser();
+  analyser.fftSize=1024;
+  dataArray=new Uint8Array(analyser.frequencyBinCount);
+  audioSource.connect(analyser);
+  analyser.connect(audioCtx.destination);
+  audioSource.start();
+  visActive=true;
+});
+
+stopAudioBtn.addEventListener('click',()=>{
+  if(audioSource){try{audioSource.stop();}catch{} audioSource.disconnect(); audioSource=null;}
+  visActive=false;
+});
+
+unloadAudioBtn.addEventListener('click',()=>{
+  if(audioSource){try{audioSource.stop();}catch{} audioSource.disconnect(); audioSource=null;}
+  audioBuffer=null; analyser=null; dataArray=null; visActive=false;
+});
+
+/* ---------- Grid Invert ---------- */
+invertNowBtn.addEventListener('click',flipGrid);
+hotkeyInput.addEventListener('input',e=>hotkey=e.target.value.toLowerCase());
+window.addEventListener('keydown',e=>{
+  const key=e.key.toLowerCase();
+  if(hotkey && key===hotkey) flipGrid();
+  if(key==='g') glitch=!glitch;
+  if(key==='b') binaryLyrics=!binaryLyrics;
+  if(key==='l'){lyricsActive=!lyricsActive;}
+  if(key==='a') startAudioBtn.click();
+  if(key==='s') stopAudioBtn.click();
+});
+
+function flipGrid(){
+  for(let r=0;r<rows;r++){for(let c=0;c<cols;c++) grid[r][c]^=1;}
+  invertedVisual = !invertedVisual;
+  resizeGrid();
+}
+
+/* ---------- Lyrics Controls ---------- */
+loadLyricsBtn.addEventListener('click',()=>{
+  lyrics = lyricsBox.value.split(/\r?\n/).filter(s=>s.trim()!==''); currentLine=0;
+});
+startLyricsBtn.addEventListener('click',()=>{
+  lyricsActive=true; currentLine=0;
+  if(lyricInterval) clearInterval(lyricInterval);
+  const durationMs=parseFloat(lyricDurationInput.value)*1000;
+  lyricInterval=setInterval(()=>{currentLine=(currentLine+1)%lyrics.length;}, durationMs);
+});
+stopLyricsBtn.addEventListener('click',()=>{
+  lyricsActive=false;
+  if(lyricInterval){clearInterval(lyricInterval); lyricInterval=null;}
+});
+unloadLyricsBtn.addEventListener('click',()=>{
+  lyricsActive=false; lyrics=[]; currentLine=0;
+  if(lyricInterval){clearInterval(lyricInterval); lyricInterval=null;}
+});
+toggleBinaryLyricsBtn.addEventListener('click',()=>{binaryLyrics=!binaryLyrics;});
+toggleGlitchBtn.addEventListener('click',()=>{glitch=!glitch;});
+
+/* ---------- UI Minimize ---------- */
+toggleUIBtn.addEventListener('click',()=>{document.getElementById('controls').classList.toggle('minimized');});
+
+/* ---------- Grid resize ---------- */
+digitSizeInput.addEventListener('input',resizeGrid);
+
+/* ---------- Init ---------- */
+resizeGrid();
+render();
+</script>
+</body>
+</html>
